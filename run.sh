@@ -8,7 +8,6 @@ docker run -it \
     -v $(pwd):/home/duser/purejaxrl \
     --name purejaxrl_${user}_${gpu} \
     --user $(id -u) \
-    -d \
     --rm \
     -t purejaxrl:benlis_brax \
     /bin/bash 

@@ -8,7 +8,7 @@ from typing import Sequence, NamedTuple, Any
 from flax.training.train_state import TrainState
 import distrax
 import hydra
-import OmegaConf
+from omegaconf import OmegaConf
 import wandb
 from wrappers import (
     LogWrapper,
@@ -296,8 +296,10 @@ def make_train(config):
             update_state, loss_info = jax.lax.scan(
                 _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
             )
+
             train_state = update_state[0]
-            metric = {**traj_batch.info, **loss_info}
+            dormancies = loss_info[1][3]
+            metric = {**traj_batch.info, **{"dormancy": dormancies}}
             rng = update_state[-1]
             if config.get("DEBUG"):
 
@@ -305,17 +307,11 @@ def make_train(config):
                     return_values = info["returned_episode_returns"][
                         info["returned_episode"]
                     ]
-                    timesteps = (
-                        info["timestep"][info["returned_episode"]] * config["NUM_ENVS"]
-                    )
-                    import pdb; pdb.set_trace()
-                    for t in range(len(timesteps)):
-                        wandb.log({"global_step": timesteps[t],
-                                   "returns": return_values[t]})
-                        print(
-                            f"global step={timesteps[t]}, episodic return={return_values[t]}"
-                        )
-                    wandb.log({"dormancy": info["dormancy"]})
+                    timesteps = info["timestep"][info["returned_episode"]]
+                    metrics = {"dormancy": jax.tree_map(jnp.mean, info["dormancy"])}
+                    if len(timesteps) > 0:
+                        metrics["returns"] = return_values.mean()
+                    wandb.log(metrics)
 
                 jax.experimental.io_callback(callback, None, metric)
 
@@ -333,7 +329,7 @@ def make_train(config):
 
 
 @hydra.main(
-    version_base=None, config_path="config", config_name="ppo_continuous_action"
+    version_base=None, config_path="../config", config_name="ppo_continuous_action"
 )
 def main(config):
     config = OmegaConf.to_container(config)
@@ -345,5 +341,9 @@ def main(config):
         config=config,
         mode=config["WANDB_MODE"],
     )
-    train_jit = jax.jit(make_train(config))
-    out = train_jit(rng)
+    with jax.disable_jit(config["DISABLE_JIT"]):
+        train_jit = jax.jit(make_train(config))
+        out = train_jit(rng)
+
+if __name__ == "__main__":
+    main()

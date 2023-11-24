@@ -10,7 +10,7 @@
 "ENT_COEF": 0.0
 "VF_COEF": 0.5
 "MAX_GRAD_NORM": 0.5
-"ACTIVATION": "tanh"
+"ACTIVATION": "relu"
 "ENV_NAME": "hopper"
 "ANNEAL_LR": False
 "NORMALIZE_ENV": True
@@ -19,3 +19,5 @@
 "PROJECT": "rl-nn-dynamics"
 "SEED": 0
 "WANDB_MODE": "disabled"
+"TAU": 0.0
+"DISABLE_JIT": False
