@@ -15,3 +15,7 @@
 "ANNEAL_LR": False
 "NORMALIZE_ENV": True
 "DEBUG": True
+"ENTITY": "oxwhirl"
+"PROJECT": "rl-nn-dynamics"
+"SEED": 0
+"WANDB_MODE": "disabled"
