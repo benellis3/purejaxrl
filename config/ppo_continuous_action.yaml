@@ -21,3 +21,4 @@
 "WANDB_MODE": "disabled"
 "TAU": 0.0
 "DISABLE_JIT": False
+"OPTIMIZER": "adam"
