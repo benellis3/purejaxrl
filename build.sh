@@ -1,0 +1,1 @@
+docker build -t purejaxrl:benlis_brax --build-arg UID=$UID .

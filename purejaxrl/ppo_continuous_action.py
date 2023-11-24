@@ -7,6 +7,9 @@ from flax.linen.initializers import constant, orthogonal
 from typing import Sequence, NamedTuple, Any
 from flax.training.train_state import TrainState
 import distrax
+import hydra
+import OmegaConf
+import wandb
 from wrappers import (
     LogWrapper,
     BraxGymnaxWrapper,
@@ -31,13 +34,16 @@ class ActorCritic(nn.Module):
             256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(x)
         actor_mean = activation(actor_mean)
+        actor_dense_1_activation = actor_mean
         actor_mean = nn.Dense(
             256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(actor_mean)
         actor_mean = activation(actor_mean)
+        actor_dense_2_activation = actor_mean
         actor_mean = nn.Dense(
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
         )(actor_mean)
+        actor_dense_3_activation = actor_mean
         actor_logtstd = self.param("log_std", nn.initializers.zeros, (self.action_dim,))
         pi = distrax.MultivariateNormalDiag(actor_mean, jnp.exp(actor_logtstd))
 
@@ -45,15 +51,29 @@ class ActorCritic(nn.Module):
             256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(x)
         critic = activation(critic)
+        critic_dense_1_activation = critic
         critic = nn.Dense(
             256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(critic)
         critic = activation(critic)
+        critic_dense_2_activation = critic
         critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(
             critic
         )
+        critic_dense_3_activation = critic
 
-        return pi, jnp.squeeze(critic, axis=-1)
+        return (
+            pi,
+            jnp.squeeze(critic, axis=-1),
+            {
+                "actor_0": actor_dense_1_activation,
+                "actor_1": actor_dense_2_activation,
+                "actor_2": actor_dense_3_activation,
+                "critic_0": critic_dense_1_activation,
+                "critic_1": critic_dense_2_activation,
+                "critic_2": critic_dense_3_activation,
+            },
+        )
 
 
 class Transition(NamedTuple):
@@ -64,6 +84,25 @@ class Transition(NamedTuple):
     log_prob: jnp.ndarray
     obs: jnp.ndarray
     info: jnp.ndarray
+
+
+def dormancy_rate(activations, tau):
+    def _layer_dormancy(activations):
+        """Proportion of dormant layer neurons in an activation batch"""
+        activations = jnp.abs(activations)
+        layer_mean = activations.mean()
+
+        def _batch_dormant(activations):
+            # V1 - All samples dormant
+            # sample_dormant = (activations / layer_mean) <= tau
+            # return jnp.all(sample_dormant)
+            # V2 - Mean dormant
+            return (jnp.mean(activations) / layer_mean) <= tau
+
+        neuron_dormant = jax.vmap(_batch_dormant, in_axes=-1, out_axes=-1)(activations)
+        return jnp.mean(neuron_dormant)
+
+    return jax.tree_map(_layer_dormancy, activations)
 
 
 def make_train(config):
@@ -126,7 +165,7 @@ def make_train(config):
 
                 # SELECT ACTION
                 rng, _rng = jax.random.split(rng)
-                pi, value = network.apply(train_state.params, last_obs)
+                pi, value, _ = network.apply(train_state.params, last_obs)
                 action = pi.sample(seed=_rng)
                 log_prob = pi.log_prob(action)
 
@@ -148,7 +187,7 @@ def make_train(config):
 
             # CALCULATE ADVANTAGE
             train_state, env_state, last_obs, rng = runner_state
-            _, last_val = network.apply(train_state.params, last_obs)
+            _, last_val, _ = network.apply(train_state.params, last_obs)
 
             def _calculate_gae(traj_batch, last_val):
                 def _get_advantages(gae_and_next_value, transition):
@@ -183,7 +222,8 @@ def make_train(config):
 
                     def _loss_fn(params, traj_batch, gae, targets):
                         # RERUN NETWORK
-                        pi, value = network.apply(params, traj_batch.obs)
+                        pi, value, activations = network.apply(params, traj_batch.obs)
+                        dormancies = dormancy_rate(activations, config["TAU"])
                         log_prob = pi.log_prob(traj_batch.action)
 
                         # CALCULATE VALUE LOSS
@@ -217,7 +257,7 @@ def make_train(config):
                             + config["VF_COEF"] * value_loss
                             - config["ENT_COEF"] * entropy
                         )
-                        return total_loss, (value_loss, loss_actor, entropy)
+                        return total_loss, (value_loss, loss_actor, entropy, dormancies)
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
                     total_loss, grads = grad_fn(
@@ -257,7 +297,7 @@ def make_train(config):
                 _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
             )
             train_state = update_state[0]
-            metric = traj_batch.info
+            metric = {**traj_batch.info, **loss_info}
             rng = update_state[-1]
             if config.get("DEBUG"):
 
@@ -268,12 +308,16 @@ def make_train(config):
                     timesteps = (
                         info["timestep"][info["returned_episode"]] * config["NUM_ENVS"]
                     )
+                    import pdb; pdb.set_trace()
                     for t in range(len(timesteps)):
+                        wandb.log({"global_step": timesteps[t],
+                                   "returns": return_values[t]})
                         print(
                             f"global step={timesteps[t]}, episodic return={return_values[t]}"
                         )
+                    wandb.log({"dormancy": info["dormancy"]})
 
-                jax.debug.callback(callback, metric)
+                jax.experimental.io_callback(callback, None, metric)
 
             runner_state = (train_state, env_state, last_obs, rng)
             return runner_state, metric
@@ -288,26 +332,18 @@ def make_train(config):
     return train
 
 
-if __name__ == "__main__":
-    config = {
-        "LR": 3e-4,
-        "NUM_ENVS": 2048,
-        "NUM_STEPS": 10,
-        "TOTAL_TIMESTEPS": 5e7,
-        "UPDATE_EPOCHS": 4,
-        "NUM_MINIBATCHES": 32,
-        "GAMMA": 0.99,
-        "GAE_LAMBDA": 0.95,
-        "CLIP_EPS": 0.2,
-        "ENT_COEF": 0.0,
-        "VF_COEF": 0.5,
-        "MAX_GRAD_NORM": 0.5,
-        "ACTIVATION": "tanh",
-        "ENV_NAME": "hopper",
-        "ANNEAL_LR": False,
-        "NORMALIZE_ENV": True,
-        "DEBUG": True,
-    }
-    rng = jax.random.PRNGKey(30)
+@hydra.main(
+    version_base=None, config_path="config", config_name="ppo_continuous_action"
+)
+def main(config):
+    config = OmegaConf.to_container(config)
+    rng = jax.random.PRNGKey(config["SEED"])
+    wandb.init(
+        entity=config["ENTITY"],
+        project=config["PROJECT"],
+        tags=["PPO", "Brax"],
+        config=config,
+        mode=config["WANDB_MODE"],
+    )
     train_jit = jax.jit(make_train(config))
     out = train_jit(rng)
