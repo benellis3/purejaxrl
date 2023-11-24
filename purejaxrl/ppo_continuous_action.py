@@ -1,3 +1,4 @@
+from functools import partial
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
@@ -136,16 +137,12 @@ def make_train(config):
         rng, _rng = jax.random.split(rng)
         init_x = jnp.zeros(env.observation_space(env_params).shape)
         network_params = network.init(_rng, init_x)
-        if config["ANNEAL_LR"]:
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(learning_rate=linear_schedule, eps=1e-5),
-            )
-        else:
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(config["LR"], eps=1e-5),
-            )
+        optimizer_fn = partial(optax.adam, eps=1e-5) if config["OPTIMIZER"] == "adam" else optax.sgd
+        lr = linear_schedule if config["ANNEAL_LR"] else config["LR"]
+        tx = optax.chain(
+            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+            optimizer_fn(lr)
+        ) 
         train_state = TrainState.create(
             apply_fn=network.apply,
             params=network_params,

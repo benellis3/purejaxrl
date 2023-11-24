@@ -1,0 +1,73 @@
+command:
+  - python3
+  - ${program}
+  - ${args_no_hyphens}
+entity: oxwhirl
+method: grid
+parameters:
+  LR:
+    values:
+      - 3e-4
+  NUM_ENVS:
+    values:
+      - 2048
+  TOTAL_TIMESTEPS:
+    values:
+      - 5e7
+  UPDATE_EPOCHS:
+    values:
+      - 4
+  NUM_MINIBATCHES:
+    values:
+      - 32
+  GAMMA:
+    values:
+      - 0.99
+  GAE_LAMBDA:
+    values:
+      - 0.95
+  CLIP_EPS:
+    values:
+      - 0.2
+  ENT_COEF:
+    values:
+      - 0.0
+  VF_COEF:
+    values:
+      - 0.5
+  MAX_GRAD_NORM:
+    values:
+      - 0.5
+  ACTIVATION:
+    values:
+      - "relu"
+  ENV_NAME:
+    values:
+      - "hopper"
+      - "walker2d"
+      - "humanoid"
+      - "ant"
+      - "reacher"
+      - "halfcheetah"
+  ANNEAL_LR:
+    values:
+      - False
+  NORMALIZE_ENV:
+    values:
+      - True
+  DEBUG:
+    values:
+      - True
+  WANDB_MODE:
+    values:
+      - "online"
+  SEED:
+    values:
+      - 0
+      - 1
+      - 2
+      - 3
+      - 4
+  
+program: purejaxrl/ppo_continuous_action.py
+project: rl-nn-dynamics
