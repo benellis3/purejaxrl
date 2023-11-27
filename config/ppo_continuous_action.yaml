@@ -22,3 +22,5 @@
 "TAU": 0.0
 "DISABLE_JIT": False
 "OPTIMIZER": "adam"
+"B1": 0.9
+"B2": 0.999

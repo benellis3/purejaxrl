@@ -137,7 +137,7 @@ def make_train(config):
         rng, _rng = jax.random.split(rng)
         init_x = jnp.zeros(env.observation_space(env_params).shape)
         network_params = network.init(_rng, init_x)
-        optimizer_fn = partial(optax.adam, eps=1e-5) if config["OPTIMIZER"] == "adam" else optax.sgd
+        optimizer_fn = partial(optax.adam, b1=config["B1"], b2=config["B2"], eps=1e-5) if config["OPTIMIZER"] == "adam" else optax.sgd
         lr = linear_schedule if config["ANNEAL_LR"] else config["LR"]
         tx = optax.chain(
             optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),

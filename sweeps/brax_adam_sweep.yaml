@@ -8,10 +8,6 @@ parameters:
   LR:
     values:
       - 3e-4
-      - 3e-3
-      - 3e-2
-      - 3e-1
-      - 3
   NUM_ENVS:
     values:
       - 2048
@@ -65,12 +61,24 @@ parameters:
     values:
       - 0
       - 1
-      - 2
-      - 3
-      - 4
   OPTIMIZER:
     values:
-      - "sgd"
+      - "adam"
+  B1:
+    values:
+      - 0.9
+      - 0.99
+      - 0.999
+      - 0.8
+      - 0.7
+  B2:
+    values:
+      - 0.9
+      - 0.99
+      - 0.999
+      - 0.8
+      - 0.7
+
 
 program: purejaxrl/ppo_continuous_action.py
 project: rl-nn-dynamics
