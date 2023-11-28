@@ -106,6 +106,22 @@ def dormancy_rate(activations, tau):
     return jax.tree_map(_layer_dormancy, activations)
 
 
+def threshold_grad_second_moment(grad_second_moment, zeta_abs=1e-14):
+    def _threshold_grad_second_moment(grad_second_moment):
+        grad_second_moment = grad_second_moment.reshape(grad_second_moment.shape[0], -1)
+
+        def _batch_threshold_grad_second_moment(grad_second_moment):
+            thresh_abs = jnp.mean(grad_second_moment) <= zeta_abs
+            return thresh_abs
+
+        threshold_gsm = jax.vmap(
+            _batch_threshold_grad_second_moment, in_axes=-1, out_axes=-1
+        )(grad_second_moment)
+        return jnp.mean(threshold_gsm)
+
+    return jax.tree_map(_threshold_grad_second_moment, grad_second_moment)
+
+
 def make_train(config):
     config["NUM_UPDATES"] = (
         config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
@@ -137,12 +153,15 @@ def make_train(config):
         rng, _rng = jax.random.split(rng)
         init_x = jnp.zeros(env.observation_space(env_params).shape)
         network_params = network.init(_rng, init_x)
-        optimizer_fn = partial(optax.adam, b1=config["B1"], b2=config["B2"], eps=1e-5) if config["OPTIMIZER"] == "adam" else optax.sgd
+        optimizer_fn = (
+            partial(optax.adam, b1=config["B1"], b2=config["B2"], eps=1e-5)
+            if config["OPTIMIZER"] == "adam"
+            else optax.sgd
+        )
         lr = linear_schedule if config["ANNEAL_LR"] else config["LR"]
         tx = optax.chain(
-            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-            optimizer_fn(lr)
-        ) 
+            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), optimizer_fn(lr)
+        )
         train_state = TrainState.create(
             apply_fn=network.apply,
             params=network_params,
@@ -256,12 +275,24 @@ def make_train(config):
                         )
                         return total_loss, (value_loss, loss_actor, entropy, dormancies)
 
-                    grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
+                    grad_fn = jax.vmap(jax.value_and_grad(_loss_fn, has_aux=True))
                     total_loss, grads = grad_fn(
                         train_state.params, traj_batch, advantages, targets
                     )
+                    grad_second_moment = jax.tree_map(jnp.square, grads)
+                    threshold_gsm = threshold_grad_second_moment(grad_second_moment)
+                    grad_second_moment = jax.tree_map(
+                        lambda x: jnp.log(jnp.mean(x, axis=0) + 1e-14),
+                        grad_second_moment,
+                    )
+                    grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), grads)
                     train_state = train_state.apply_gradients(grads=grads)
-                    return train_state, total_loss
+                    total_loss, auxiliary_losses = total_loss
+                    auxiliary_losses = auxiliary_losses + (
+                        grad_second_moment,
+                        threshold_gsm,
+                    )
+                    return train_state, (total_loss, auxiliary_losses)
 
                 train_state, traj_batch, advantages, targets, rng = update_state
                 rng, _rng = jax.random.split(rng)
@@ -296,7 +327,16 @@ def make_train(config):
 
             train_state = update_state[0]
             dormancies = loss_info[1][3]
-            metric = {**traj_batch.info, **{"dormancy": dormancies}}
+            grad_second_moment = loss_info[1][4]
+            threshold_gsm = loss_info[1][5]
+            metric = {
+                **traj_batch.info,
+                **{
+                    "dormancy": dormancies,
+                    "grad_second_moment": grad_second_moment,
+                    "threshold_grad_second_moment": threshold_gsm,
+                },
+            }
             rng = update_state[-1]
             if config.get("DEBUG"):
 
@@ -305,7 +345,15 @@ def make_train(config):
                         info["returned_episode"]
                     ]
                     timesteps = info["timestep"][info["returned_episode"]]
-                    metrics = {"dormancy": jax.tree_map(jnp.mean, info["dormancy"])}
+                    metrics = {
+                        "dormancy": jax.tree_map(jnp.mean, info["dormancy"]),
+                        "grad_second_moment": jax.tree_map(
+                            wandb.Histogram, info["grad_second_moment"]
+                        ),
+                        "threshold_grad_second_moment": jax.tree_map(
+                            jnp.mean, info["threshold_grad_second_moment"]
+                        ),
+                    }
                     if len(timesteps) > 0:
                         metrics["returns"] = return_values.mean()
                     wandb.log(metrics)
@@ -341,6 +389,16 @@ def main(config):
     with jax.disable_jit(config["DISABLE_JIT"]):
         train_jit = jax.jit(make_train(config))
         out = train_jit(rng)
+        return_values = out["metrics"]["returned_episode_returns"].mean(-1).reshape(-1)
+        for t in range(len(return_values)):
+            wandb.log(
+                {
+                    "eot_return": return_values[t],
+                    "eot_update": t,
+                    "eot_timestep": t * config["NUM_STEPS"] * config["NUM_ENVS"],
+                }
+            )
+
 
 if __name__ == "__main__":
     main()
