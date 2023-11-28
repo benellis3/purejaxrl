@@ -106,12 +106,12 @@ def dormancy_rate(activations, tau):
     return jax.tree_map(_layer_dormancy, activations)
 
 
-def threshold_grad_second_moment(grad_second_moment, zeta_abs=1e-14):
+def threshold_grad_second_moment(grad_second_moment, zeta_abs=0.1):
     def _threshold_grad_second_moment(grad_second_moment):
         grad_second_moment = grad_second_moment.reshape(grad_second_moment.shape[0], -1)
-
+        gsm_mean = grad_second_moment.mean()
         def _batch_threshold_grad_second_moment(grad_second_moment):
-            thresh_abs = jnp.mean(grad_second_moment) <= zeta_abs
+            thresh_abs = (jnp.mean(grad_second_moment) / gsm_mean) <= zeta_abs
             return thresh_abs
 
         threshold_gsm = jax.vmap(
@@ -235,7 +235,7 @@ def make_train(config):
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_state, batch_info):
                     traj_batch, advantages, targets = batch_info
-
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
                     def _loss_fn(params, traj_batch, gae, targets):
                         # RERUN NETWORK
                         pi, value, activations = network.apply(params, traj_batch.obs)
@@ -254,7 +254,6 @@ def make_train(config):
 
                         # CALCULATE ACTOR LOSS
                         ratio = jnp.exp(log_prob - traj_batch.log_prob)
-                        gae = (gae - gae.mean()) / (gae.std() + 1e-8)
                         loss_actor1 = ratio * gae
                         loss_actor2 = (
                             jnp.clip(
@@ -275,21 +274,20 @@ def make_train(config):
                         )
                         return total_loss, (value_loss, loss_actor, entropy, dormancies)
 
-                    grad_fn = jax.vmap(jax.value_and_grad(_loss_fn, has_aux=True))
+                    grad_fn = jax.vmap(jax.value_and_grad(_loss_fn, has_aux=True), in_axes=(None, 0, 0, 0))
                     total_loss, grads = grad_fn(
                         train_state.params, traj_batch, advantages, targets
                     )
                     grad_second_moment = jax.tree_map(jnp.square, grads)
                     threshold_gsm = threshold_grad_second_moment(grad_second_moment)
-                    grad_second_moment = jax.tree_map(
-                        lambda x: jnp.log(jnp.mean(x, axis=0) + 1e-14),
-                        grad_second_moment,
-                    )
+                    # grad_second_moment = jax.tree_map(
+                    #     lambda x: jnp.log(jnp.mean(x, axis=0) + 1e-14),
+                    #     grad_second_moment,
+                    # )
                     grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), grads)
                     train_state = train_state.apply_gradients(grads=grads)
                     total_loss, auxiliary_losses = total_loss
                     auxiliary_losses = auxiliary_losses + (
-                        grad_second_moment,
                         threshold_gsm,
                     )
                     return train_state, (total_loss, auxiliary_losses)
@@ -327,13 +325,13 @@ def make_train(config):
 
             train_state = update_state[0]
             dormancies = loss_info[1][3]
-            grad_second_moment = loss_info[1][4]
-            threshold_gsm = loss_info[1][5]
+            # grad_second_moment = loss_info[1][4]
+            threshold_gsm = loss_info[1][4]
             metric = {
                 **traj_batch.info,
                 **{
                     "dormancy": dormancies,
-                    "grad_second_moment": grad_second_moment,
+                    # "grad_second_moment": grad_second_moment,
                     "threshold_grad_second_moment": threshold_gsm,
                 },
             }
@@ -347,9 +345,9 @@ def make_train(config):
                     timesteps = info["timestep"][info["returned_episode"]]
                     metrics = {
                         "dormancy": jax.tree_map(jnp.mean, info["dormancy"]),
-                        "grad_second_moment": jax.tree_map(
-                            wandb.Histogram, info["grad_second_moment"]
-                        ),
+                        # "grad_second_moment": jax.tree_map(
+                        #     wandb.Histogram, info["grad_second_moment"]
+                        # ),
                         "threshold_grad_second_moment": jax.tree_map(
                             jnp.mean, info["threshold_grad_second_moment"]
                         ),
